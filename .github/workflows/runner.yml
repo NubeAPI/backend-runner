@@ -1,0 +1,372 @@
+name: Backend Cloudflare Tunnel GitHub Runner Remote Repo
+
+on:
+  push:
+    branches: [main]
+
+  schedule:
+    # Cada 5 horas, en horario UTC.
+    - cron: "0 */5 * * *"
+
+  workflow_dispatch:
+
+  repository_dispatch:
+    types:
+      - backend-updated
+
+permissions:
+  contents: read
+
+env:
+  PORT: 3000
+  HOST: 0.0.0.0
+  NODE_ENV: production
+
+  BACKEND_REPO: NubeAPI/backend
+  BACKEND_BRANCH: main
+
+  PUBLIC_URL: https://api.nubeapi.xyz
+
+  # 5 horas y 30 minutos.
+  # GitHub-hosted runners tienen límite de duración.
+  LIVE_SECONDS: 19800
+
+jobs:
+  validate-new-backend:
+    name: Probar backend nuevo
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar backend completo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BACKEND_REPO }}
+          ref: ${{ env.BACKEND_BRANCH }}
+          path: backend
+          fetch-depth: 0
+          token: ${{ secrets.BACKEND_REPO_TOKEN || github.token }}
+
+      - name: Create .env
+        working-directory: backend
+        run: printf '%s' "${{ secrets.ENV_FILE }}" > .env
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+          run_install: false
+
+      - name: Configurar pnpm para CI
+        working-directory: backend
+        run: |
+          pnpm config set store-dir ~/.pnpm-store
+
+          if [ ! -f pnpm-workspace.yaml ]; then
+            cat > pnpm-workspace.yaml <<'EOF'
+          packages:
+            - .
+          onlyBuiltDependencies:
+            - mongodb-memory-server
+            - unrs-resolver
+          EOF
+          else
+            echo "pnpm-workspace.yaml ya existe, no lo sobrescribo."
+          fi
+
+          cat pnpm-workspace.yaml
+
+      - name: Instalar dependencias
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: backend
+        run: pnpm run build
+
+      - name: Probar backend localmente
+        working-directory: backend
+        run: |
+          echo "Iniciando backend nuevo..."
+
+          pnpm run start:prod > backend-validate.log 2>&1 &
+          BACKEND_PID=$!
+
+          echo "PID backend de prueba: $BACKEND_PID"
+
+          for i in {1..60}; do
+            echo "Intento $i/60..."
+
+            if curl -fsS "http://127.0.0.1:${PORT}/health"; then
+              echo "Backend respondió en /health"
+              kill "$BACKEND_PID" || true
+              exit 0
+            fi
+
+            if curl -fsS "http://127.0.0.1:${PORT}/"; then
+              echo "Backend respondió en /"
+              kill "$BACKEND_PID" || true
+              exit 0
+            fi
+
+            if ! ps -p "$BACKEND_PID" > /dev/null; then
+              echo "El backend se cerró antes de responder."
+              cat backend-validate.log || true
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "Backend nuevo no arrancó correctamente."
+          cat backend-validate.log || true
+          kill "$BACKEND_PID" || true
+          exit 1
+
+  expose-validated-backend:
+    name: Exponer backend validado con Cloudflare Tunnel
+    needs: validate-new-backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    concurrency:
+      group: backend-cloudflare-tunnel
+      cancel-in-progress: true
+
+    steps:
+      - name: Descargar backend completo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BACKEND_REPO }}
+          ref: ${{ env.BACKEND_BRANCH }}
+          path: backend
+          fetch-depth: 0
+          token: ${{ secrets.BACKEND_REPO_TOKEN || github.token }}
+
+      - name: Mostrar commit descargado
+        working-directory: backend
+        run: |
+          git log -1 --oneline
+          git status --short
+
+      - name: Create .env
+        working-directory: backend
+        run: printf '%s' "${{ secrets.ENV_FILE }}" > .env
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+          run_install: false
+
+      - name: Configurar pnpm para CI
+        working-directory: backend
+        run: |
+          pnpm config set store-dir ~/.pnpm-store
+
+          if [ ! -f pnpm-workspace.yaml ]; then
+            cat > pnpm-workspace.yaml <<'EOF'
+          packages:
+            - .
+          onlyBuiltDependencies:
+            - mongodb-memory-server
+            - unrs-resolver
+          EOF
+          else
+            echo "pnpm-workspace.yaml ya existe, no lo sobrescribo."
+          fi
+
+          cat pnpm-workspace.yaml
+
+      - name: Instalar dependencias
+        working-directory: backend
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: backend
+        run: pnpm run build
+
+      - name: Iniciar backend definitivo
+        working-directory: backend
+        run: |
+          echo "Iniciando backend definitivo..."
+
+          pnpm run start:prod > backend-live.log 2>&1 &
+          echo $! > backend-live.pid
+
+          BACKEND_PID=$(cat backend-live.pid)
+          echo "PID backend definitivo: $BACKEND_PID"
+
+          for i in {1..60}; do
+            echo "Intento $i/60..."
+
+            if curl -fsS "http://127.0.0.1:${PORT}/health"; then
+              echo "Backend definitivo respondió en /health"
+              exit 0
+            fi
+
+            if curl -fsS "http://127.0.0.1:${PORT}/"; then
+              echo "Backend definitivo respondió en /"
+              exit 0
+            fi
+
+            if ! ps -p "$BACKEND_PID" > /dev/null; then
+              echo "El backend definitivo se cerró antes de exponerse."
+              cat backend-live.log || true
+              exit 1
+            fi
+
+            sleep 2
+          done
+
+          echo "Backend definitivo falló antes de exponer."
+          cat backend-live.log || true
+          exit 1
+
+      - name: Instalar cloudflared
+        run: |
+          set -Eeuo pipefail
+          set -x
+
+          echo "Instalando cloudflared..."
+
+          curl -L \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+
+          cloudflared --version
+
+      - name: Exponer backend con Cloudflare Tunnel
+        working-directory: backend
+        env:
+          CLOUDFLARED_TOKEN: ${{ secrets.CLOUDFLARED_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          set -x
+
+          if [ -z "${CLOUDFLARED_TOKEN:-}" ]; then
+            echo "Falta el secret CLOUDFLARED_TOKEN."
+            exit 1
+          fi
+
+          echo "Verificando backend local antes de abrir túnel..."
+          curl --max-time 10 -fsS "http://127.0.0.1:${PORT}/health" \
+            || curl --max-time 10 -fsS "http://127.0.0.1:${PORT}/"
+
+          rm -f cloudflared.log cloudflared.pid public-health.out
+
+          echo "Iniciando Cloudflare Tunnel..."
+          cloudflared tunnel --no-autoupdate run --token "${CLOUDFLARED_TOKEN}" \
+            > cloudflared.log 2>&1 &
+
+          CLOUDFLARED_PID=$!
+          echo "$CLOUDFLARED_PID" > cloudflared.pid
+
+          echo "PID cloudflared: $CLOUDFLARED_PID"
+
+          echo "Esperando que cloudflared conecte..."
+
+          for i in {1..120}; do
+            echo "----- Esperando Cloudflare Tunnel $i/120 -----"
+
+            if ! ps -p "$CLOUDFLARED_PID" > /dev/null; then
+              echo "cloudflared murió antes de conectar."
+              cat cloudflared.log || true
+              exit 1
+            fi
+
+            tail -n 120 cloudflared.log || true
+
+            if grep -Ei "registered tunnel connection|connection.*registered|connected" cloudflared.log > /dev/null; then
+              echo "cloudflared parece conectado."
+              break
+            fi
+
+            sleep 2
+          done
+
+          echo "Probando URL pública:"
+          echo "${PUBLIC_URL}"
+
+          for i in {1..120}; do
+            echo "----- Probando público $i/120 -----"
+
+            if ! ps -p "$CLOUDFLARED_PID" > /dev/null; then
+              echo "cloudflared murió durante la prueba pública."
+              cat cloudflared.log || true
+              exit 1
+            fi
+
+            HTTP_CODE="$(curl \
+              --max-time 20 \
+              --connect-timeout 10 \
+              -sS \
+              -o public-health.out \
+              -w '%{http_code}' \
+              "${PUBLIC_URL}/health" || true)"
+
+            echo "HTTP_CODE=${HTTP_CODE}"
+            cat public-health.out || true
+            echo
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Backend público funcionando correctamente:"
+              echo "${PUBLIC_URL}"
+              exit 0
+            fi
+
+            echo "Todavía no está listo. Logs cloudflared:"
+            tail -n 160 cloudflared.log || true
+
+            sleep 3
+          done
+
+          echo "Cloudflare Tunnel nunca quedó disponible públicamente."
+          echo "Backend local:"
+          curl --max-time 10 -v "http://127.0.0.1:${PORT}/health" || true
+
+          echo "Logs completos cloudflared:"
+          cat cloudflared.log || true
+
+          echo "Procesos:"
+          ps aux | grep -E "cloudflared|node|npm|pnpm" | grep -v grep || true
+
+          echo "Puertos:"
+          ss -ltnp || netstat -ltnp || true
+
+          exit 1
+
+      - name: Mantener backend vivo
+        working-directory: backend
+        run: |
+          echo "Backend vivo durante ${LIVE_SECONDS} segundos."
+          echo "URL pública:"
+          echo "${PUBLIC_URL}"
+
+          sleep "${LIVE_SECONDS}"
+
+      - name: Apagar procesos
+        if: always()
+        working-directory: backend
+        run: |
+          if [ -f cloudflared.pid ]; then
+            kill "$(cat cloudflared.pid)" || true
+          fi
+
+          if [ -f backend-live.pid ]; then
+            kill "$(cat backend-live.pid)" || true
+          fi
+
+          echo "Procesos apagados."
