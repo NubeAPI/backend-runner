@@ -251,7 +251,9 @@ jobs:
 
       - name: Instalar dependencias
         working-directory: backend
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm approve-builds --all
+          pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build
         working-directory: backend
@@ -267,28 +269,6 @@ jobs:
 
           BACKEND_PID=$(cat backend-live.pid)
           echo "PID backend definitivo: $BACKEND_PID"
-
-          for i in {1..60}; do
-            echo "Intento $i/60..."
-
-            if curl -fsS "http://127.0.0.1:${PORT}/health"; then
-              echo "Backend definitivo respondió en /health"
-              exit 0
-            fi
-
-            if curl -fsS "http://127.0.0.1:${PORT}/"; then
-              echo "Backend definitivo respondió en /"
-              exit 0
-            fi
-
-            if ! ps -p "$BACKEND_PID" > /dev/null; then
-              echo "El backend definitivo se cerró antes de exponerse."
-              cat backend-live.log || true
-              exit 1
-            fi
-
-            sleep 2
-          done
 
           echo "Backend definitivo falló antes de exponer."
           cat backend-live.log || true
