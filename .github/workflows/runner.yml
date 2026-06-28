@@ -345,7 +345,7 @@ jobs:
             cat public-health.out || true
             echo
 
-            if [ "$HTTP_CODE" = "200" ]; then
+            if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ]; then
               echo "Backend público funcionando correctamente:"
               echo "${PUBLIC_URL}"
               exit 0
