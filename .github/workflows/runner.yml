@@ -290,10 +290,6 @@ jobs:
             exit 1
           fi
 
-          echo "Verificando backend local antes de abrir túnel..."
-          curl --max-time 10 -fsS "http://127.0.0.1:${PORT}/health" \
-            || curl --max-time 10 -fsS "http://127.0.0.1:${PORT}/"
-
           rm -f cloudflared.log cloudflared.pid public-health.out
 
           echo "Iniciando Cloudflare Tunnel para el backend..."
