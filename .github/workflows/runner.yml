@@ -263,16 +263,19 @@ jobs:
         working-directory: backend
         run: |
           echo "Iniciando backend definitivo..."
-
-          pnpm run start:prod > backend-live.log 2>&1 &
-          echo $! > backend-live.pid
-
-          BACKEND_PID=$(cat backend-live.pid)
+          pnpm run start:prod 2>&1 | tee backend-live.log &
+          BACKEND_PID=$!
+          echo $BACKEND_PID > backend-live.pid
           echo "PID backend definitivo: $BACKEND_PID"
-
-          echo "Backend definitivo falló antes de exponer."
-          cat backend-live.log || true
-          exit 1
+          sleep 5
+          if ps -p $BACKEND_PID > /dev/null; then
+            echo "Backend está corriendo correctamente."
+            exit 0
+          else
+            echo "Backend falló antes de exponerse."
+            cat backend-live.log || true
+            exit 1
+          fi
 
       - name: Exponer backend con Cloudflare Tunnel
         working-directory: backend
