@@ -263,7 +263,7 @@ jobs:
         working-directory: backend
         run: |
           echo "Iniciando backend definitivo..."
-          pnpm run start:prod 2>&1 | tee backend-live.log &
+          nohup pnpm run start:prod > backend-live.log 2>&1 &
           BACKEND_PID=$!
           echo $BACKEND_PID > backend-live.pid
           echo "PID backend definitivo: $BACKEND_PID"
