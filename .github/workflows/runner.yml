@@ -283,14 +283,6 @@ jobs:
             exit 1
           fi
 
-      - name: Forward to port 3000
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y socat
-
-          socat TCP-LISTEN:3000,bind=127.0.0.1,fork TCP:localhost:3000 &
-          echo $! > socat.pid
-
       - name: Exponer backend con Cloudflare Tunnel
         working-directory: backend
         env:
@@ -394,8 +386,8 @@ jobs:
             kill "$(cat backend-live.pid)" || true
           fi
 
-          if [ -f cloudflared-mysql.pid ]; then
-            kill "$(cat cloudflared-mysql.pid)" || true
+          if [ -f ../cloudflared-mysql.pid ]; then
+            kill "$(cat ../cloudflared-mysql.pid)" || true
           fi
 
           echo "Procesos apagados."
