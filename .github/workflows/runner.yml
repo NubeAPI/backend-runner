@@ -119,7 +119,7 @@ jobs:
         working-directory: backend
         run: |
           pnpm approve-builds --all
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Build
         working-directory: backend
