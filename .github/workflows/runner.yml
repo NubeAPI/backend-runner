@@ -267,13 +267,19 @@ jobs:
           BACKEND_PID=$!
           echo $BACKEND_PID > backend-live.pid
           echo "PID backend definitivo: $BACKEND_PID"
-          sleep 5
+
+          echo "Esperando 10s para que NestJS inicialice..."
+          sleep 10
+
+          echo "=== backend-live.log ==="
+          cat backend-live.log || true
+          echo "========================"
+
           if ps -p $BACKEND_PID > /dev/null; then
             echo "Backend está corriendo correctamente."
             exit 0
           else
             echo "Backend falló antes de exponerse."
-            cat backend-live.log || true
             exit 1
           fi
 
