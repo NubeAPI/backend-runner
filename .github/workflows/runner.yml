@@ -1,18 +1,11 @@
-name: Backend Cloudflare Tunnel GitHub Runner Remote Repo
+name: LibertyFinance Backend - Cloudflare Tunnel
 
 on:
-  push:
-    branches: [main]
-
   schedule:
     # Cada 5 horas, en horario UTC.
     - cron: "0 */5 * * *"
 
   workflow_dispatch:
-
-  repository_dispatch:
-    types:
-      - backend-updated
 
 permissions:
   contents: read
@@ -22,13 +15,12 @@ env:
   HOST: 0.0.0.0
   NODE_ENV: production
 
-  BACKEND_REPO: NubeAPI/backend
+  BACKEND_REPO: liberty-finance-balcarce/LibertyFinance_BackEnd
   BACKEND_BRANCH: main
 
-  PUBLIC_URL: https://api.nubeapi.xyz
+  PUBLIC_URL: https://api-liberty-finance.nubeapi.xyz
 
   # 5 horas y 30 minutos.
-  # GitHub-hosted runners tienen límite de duración.
   LIVE_SECONDS: 19800
 
 jobs:
@@ -44,11 +36,55 @@ jobs:
           ref: ${{ env.BACKEND_BRANCH }}
           path: backend
           fetch-depth: 0
-          token: ${{ secrets.BACKEND_REPO_TOKEN || github.token }}
 
       - name: Create .env
         working-directory: backend
         run: printf '%s' "${{ secrets.ENV_FILE }}" > .env
+
+      - name: Instalar cloudflared (para tunnel MySQL)
+        run: |
+          set -Eeuo pipefail
+          curl -L \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+          cloudflared --version
+
+      - name: Conectar MySQL remoto via Cloudflare Access TCP
+        env:
+          CLOUDFLARED_TOKEN: ${{ secrets.CLOUDFLARED_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          set -x
+
+          echo "Abriendo túnel TCP hacia mysql.nubeapi.xyz:3306 en localhost:3306..."
+
+          cloudflared access tcp \
+            --hostname mysql.nubeapi.xyz \
+            --url 127.0.0.1:3306 \
+            > cloudflared-mysql.log 2>&1 &
+
+          echo $! > cloudflared-mysql.pid
+          echo "PID cloudflared MySQL: $(cat cloudflared-mysql.pid)"
+
+          echo "Esperando que el túnel MySQL esté listo..."
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 3306 2>/dev/null; then
+              echo "Puerto 3306 local disponible (intento $i/30)"
+              break
+            fi
+            echo "Intento $i/30 — esperando..."
+            sleep 2
+          done
+
+          if ! nc -z 127.0.0.1 3306 2>/dev/null; then
+            echo "No se pudo establecer túnel MySQL."
+            cat cloudflared-mysql.log || true
+            exit 1
+          fi
+
+          echo "Túnel MySQL activo."
 
       - name: Instalar Node.js
         uses: actions/setup-node@v4
@@ -71,7 +107,6 @@ jobs:
           packages:
             - .
           onlyBuiltDependencies:
-            - mongodb-memory-server
             - unrs-resolver
           EOF
           else
@@ -91,7 +126,7 @@ jobs:
       - name: Probar backend localmente
         working-directory: backend
         run: |
-          echo "Iniciando backend nuevo..."
+          echo "Iniciando backend de validación..."
 
           pnpm run start:prod > backend-validate.log 2>&1 &
           BACKEND_PID=$!
@@ -122,7 +157,7 @@ jobs:
             sleep 2
           done
 
-          echo "Backend nuevo no arrancó correctamente."
+          echo "Backend de validación no arrancó correctamente."
           cat backend-validate.log || true
           kill "$BACKEND_PID" || true
           exit 1
@@ -134,7 +169,7 @@ jobs:
     timeout-minutes: 355
 
     concurrency:
-      group: backend-cloudflare-tunnel
+      group: liberty-finance-backend-tunnel
       cancel-in-progress: true
 
     steps:
@@ -145,7 +180,6 @@ jobs:
           ref: ${{ env.BACKEND_BRANCH }}
           path: backend
           fetch-depth: 0
-          token: ${{ secrets.BACKEND_REPO_TOKEN || github.token }}
 
       - name: Mostrar commit descargado
         working-directory: backend
@@ -156,6 +190,57 @@ jobs:
       - name: Create .env
         working-directory: backend
         run: printf '%s' "${{ secrets.ENV_FILE }}" > .env
+
+      - name: Instalar cloudflared
+        run: |
+          set -Eeuo pipefail
+          set -x
+
+          echo "Instalando cloudflared..."
+
+          curl -L \
+            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
+            -o cloudflared
+
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/cloudflared
+
+          cloudflared --version
+
+      - name: Conectar MySQL remoto via Cloudflare Access TCP
+        env:
+          CLOUDFLARED_TOKEN: ${{ secrets.CLOUDFLARED_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          set -x
+
+          echo "Abriendo túnel TCP hacia mysql.nubeapi.xyz:3306 en localhost:3306..."
+
+          cloudflared access tcp \
+            --hostname mysql.nubeapi.xyz \
+            --url 127.0.0.1:3306 \
+            > cloudflared-mysql.log 2>&1 &
+
+          echo $! > cloudflared-mysql.pid
+          echo "PID cloudflared MySQL: $(cat cloudflared-mysql.pid)"
+
+          echo "Esperando que el túnel MySQL esté listo..."
+          for i in {1..30}; do
+            if nc -z 127.0.0.1 3306 2>/dev/null; then
+              echo "Puerto 3306 local disponible (intento $i/30)"
+              break
+            fi
+            echo "Intento $i/30 — esperando..."
+            sleep 2
+          done
+
+          if ! nc -z 127.0.0.1 3306 2>/dev/null; then
+            echo "No se pudo establecer túnel MySQL."
+            cat cloudflared-mysql.log || true
+            exit 1
+          fi
+
+          echo "Túnel MySQL activo."
 
       - name: Instalar Node.js
         uses: actions/setup-node@v4
@@ -178,7 +263,6 @@ jobs:
           packages:
             - .
           onlyBuiltDependencies:
-            - mongodb-memory-server
             - unrs-resolver
           EOF
           else
@@ -232,22 +316,6 @@ jobs:
           cat backend-live.log || true
           exit 1
 
-      - name: Instalar cloudflared
-        run: |
-          set -Eeuo pipefail
-          set -x
-
-          echo "Instalando cloudflared..."
-
-          curl -L \
-            https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 \
-            -o cloudflared
-
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/cloudflared
-
-          cloudflared --version
-
       - name: Exponer backend con Cloudflare Tunnel
         working-directory: backend
         env:
@@ -267,7 +335,7 @@ jobs:
 
           rm -f cloudflared.log cloudflared.pid public-health.out
 
-          echo "Iniciando Cloudflare Tunnel..."
+          echo "Iniciando Cloudflare Tunnel para el backend..."
           cloudflared tunnel --no-autoupdate run --token "${CLOUDFLARED_TOKEN}" \
             > cloudflared.log 2>&1 &
 
@@ -297,8 +365,7 @@ jobs:
             sleep 2
           done
 
-          echo "Probando URL pública:"
-          echo "${PUBLIC_URL}"
+          echo "Probando URL pública: ${PUBLIC_URL}"
 
           for i in {1..120}; do
             echo "----- Probando público $i/120 -----"
@@ -334,27 +401,14 @@ jobs:
           done
 
           echo "Cloudflare Tunnel nunca quedó disponible públicamente."
-          echo "Backend local:"
-          curl --max-time 10 -v "http://127.0.0.1:${PORT}/health" || true
-
-          echo "Logs completos cloudflared:"
           cat cloudflared.log || true
-
-          echo "Procesos:"
-          ps aux | grep -E "cloudflared|node|npm|pnpm" | grep -v grep || true
-
-          echo "Puertos:"
-          ss -ltnp || netstat -ltnp || true
-
           exit 1
 
       - name: Mantener backend vivo
         working-directory: backend
         run: |
           echo "Backend vivo durante ${LIVE_SECONDS} segundos."
-          echo "URL pública:"
-          echo "${PUBLIC_URL}"
-
+          echo "URL pública: ${PUBLIC_URL}"
           sleep "${LIVE_SECONDS}"
 
       - name: Apagar procesos
@@ -367,6 +421,10 @@ jobs:
 
           if [ -f backend-live.pid ]; then
             kill "$(cat backend-live.pid)" || true
+          fi
+
+          if [ -f cloudflared-mysql.pid ]; then
+            kill "$(cat cloudflared-mysql.pid)" || true
           fi
 
           echo "Procesos apagados."
