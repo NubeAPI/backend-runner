@@ -117,7 +117,9 @@ jobs:
 
       - name: Instalar dependencias
         working-directory: backend
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm approve-builds --all
+          pnpm install --frozen-lockfile
 
       - name: Build
         working-directory: backend
