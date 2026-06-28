@@ -129,38 +129,28 @@ jobs:
         working-directory: backend
         run: |
           echo "Iniciando backend de validación..."
-
-          pnpm run start:prod > backend-validate.log 2>&1 &
+          pnpm run start:prod 2>&1 | tee backend-validate.log &
           BACKEND_PID=$!
-
           echo "PID backend de prueba: $BACKEND_PID"
-
           for i in {1..60}; do
             echo "Intento $i/60..."
-
             if curl -fsS "http://127.0.0.1:${PORT}/health"; then
               echo "Backend respondió en /health"
               kill "$BACKEND_PID" || true
               exit 0
             fi
-
             if curl -fsS "http://127.0.0.1:${PORT}/"; then
               echo "Backend respondió en /"
               kill "$BACKEND_PID" || true
               exit 0
             fi
-
             if ! ps -p "$BACKEND_PID" > /dev/null; then
               echo "El backend se cerró antes de responder."
-              cat backend-validate.log || true
               exit 1
             fi
-
             sleep 2
           done
-
           echo "Backend de validación no arrancó correctamente."
-          cat backend-validate.log || true
           kill "$BACKEND_PID" || true
           exit 1
 
